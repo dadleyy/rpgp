@@ -13,7 +13,7 @@ use crate::types::{Tag, Version};
 #[derive(Clone, PartialEq, Eq)]
 pub struct SymEncryptedProtectedData {
     packet_version: Version,
-    data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
 }
 
 impl SymEncryptedProtectedData {

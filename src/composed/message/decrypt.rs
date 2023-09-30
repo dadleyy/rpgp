@@ -97,6 +97,68 @@ where
     }
 }
 
+pub struct MessageDecrypterConsume {
+    key: Vec<u8>,
+    alg: SymmetricKeyAlgorithm,
+    edata: Vec<Edata>,
+    // position in the edata slice
+    pos: usize,
+    // the current msgs that are already decrypted
+    current_msgs: Option<Box<dyn Iterator<Item = Result<Message>>>>,
+}
+
+impl MessageDecrypterConsume {
+    pub fn new(session_key: Vec<u8>, alg: SymmetricKeyAlgorithm, edata: Vec<Edata>) -> Self {
+        Self {
+            key: session_key,
+            alg,
+            edata,
+            pos: 0,
+            current_msgs: None,
+        }
+    }
+}
+
+impl Iterator for MessageDecrypterConsume {
+    type Item = Result<Message>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.edata.is_empty() && self.current_msgs.is_none() {
+            return None;
+        }
+
+        if self.current_msgs.is_none() {
+            // need to decrypt another packet
+            let packet = self.edata.pop()?;
+            self.pos += 1;
+
+            let protected = packet.tag() == Tag::SymEncryptedProtectedData;
+            let mut res = match packet {
+                Edata::SymEncryptedData(container) => container.data,
+                Edata::SymEncryptedProtectedData(container) => container.data,
+            };
+
+            debug!("decrypting protected = {:?}", protected);
+
+            let decrypted_packet: &[u8] = if protected {
+                err_opt!(self.alg.decrypt_protected(&self.key, &mut res))
+            } else {
+                err_opt!(self.alg.decrypt(&self.key, &mut res))
+            };
+
+            self.current_msgs = Some(Message::from_bytes_many(Cursor::new(
+                decrypted_packet.to_vec(),
+            )));
+        };
+
+        let mut msgs = self.current_msgs.take().expect("just checked");
+        let next = msgs.next();
+        self.current_msgs = Some(msgs);
+
+        next
+    }
+}
+
 pub struct MessageDecrypter<'a> {
     key: Vec<u8>,
     alg: SymmetricKeyAlgorithm,

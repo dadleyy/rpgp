@@ -433,6 +433,116 @@ impl Message {
         }
     }
 
+    pub fn decrypt_consume(
+        self,
+        keys: &[&SignedSecretKey],
+    ) -> Result<(MessageDecrypterConsume, Vec<KeyId>)> {
+        let key_pw = || "".to_string();
+
+        match self {
+            Message::Compressed { .. } | Message::Literal { .. } => {
+                bail!("not encrypted");
+            }
+            Message::Signed { message, .. } => match message {
+                Some(message) => message.decrypt_consume(keys),
+                None => bail!("not encrypted"),
+            },
+            Message::Encrypted { esk, edata, .. } => {
+                let valid_keys = keys
+                    .iter()
+                    .filter_map(|key| {
+                        // search for a packet with a key id that we have and that key.
+                        let mut packet = None;
+                        let mut encoding_key = None;
+                        let mut encoding_subkey = None;
+
+                        for esk_packet in esk.iter().filter_map(|k| match k {
+                            Esk::PublicKeyEncryptedSessionKey(k) => Some(k),
+                            _ => None,
+                        }) {
+                            debug!("esk packet: {:?}", esk_packet);
+                            debug!("{:?}", key.key_id());
+                            debug!(
+                                "{:?}",
+                                key.secret_subkeys
+                                    .iter()
+                                    .map(KeyTrait::key_id)
+                                    .collect::<Vec<_>>()
+                            );
+
+                            // find the key with the matching key id
+
+                            if &key.primary_key.key_id() == esk_packet.id() {
+                                encoding_key = Some(&key.primary_key);
+                            }
+
+                            if encoding_key.is_none() {
+                                encoding_subkey = key
+                                    .secret_subkeys
+                                    .iter()
+                                    .find(|&subkey| &subkey.key_id() == esk_packet.id());
+                            }
+
+                            if encoding_key.is_some() || encoding_subkey.is_some() {
+                                packet = Some(esk_packet);
+                                break;
+                            }
+                        }
+
+                        packet.map(|packet| (packet, encoding_key, encoding_subkey))
+                    })
+                    .collect::<Vec<_>>();
+
+                if valid_keys.is_empty() {
+                    return Err(Error::MissingKey);
+                }
+
+                let session_keys = valid_keys
+                    .iter()
+                    .map(|(packet, encoding_key, encoding_subkey)| {
+                        if let Some(ek) = encoding_key {
+                            Ok((
+                                ek.key_id(),
+                                decrypt_session_key(ek, key_pw.clone(), packet.mpis())?,
+                            ))
+                        } else if let Some(ek) = encoding_subkey {
+                            Ok((
+                                ek.key_id(),
+                                decrypt_session_key(ek, key_pw.clone(), packet.mpis())?,
+                            ))
+                        } else {
+                            unreachable!("either a key or a subkey were found");
+                        }
+                    })
+                    .filter(|res| match res {
+                        Ok(_) => true,
+                        Err(err) => {
+                            warn!("failed to decrypt session_key for key: {:?}", err);
+                            false
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+
+                ensure!(!session_keys.is_empty(), "failed to decrypt session key");
+
+                // make sure all the keys are the same, otherwise we are in a bad place
+                let (session_key, alg) = {
+                    let k0 = &session_keys[0].1;
+                    if !session_keys.iter().skip(1).all(|(_, k)| k0 == k) {
+                        bail!("found inconsistent session keys, possible message corruption");
+                    }
+
+                    // TODO: avoid cloning
+                    (k0.0.clone(), k0.1)
+                };
+
+                let ids = session_keys.into_iter().map(|(k, _)| k).collect();
+
+                Ok((MessageDecrypterConsume::new(session_key, alg, edata), ids))
+            }
+        }
+    }
+
     /// Decrypt the message using the given key.
     /// Returns a message decrypter, and a list of [KeyId]s that are valid recipients of this message.
     pub fn decrypt<'a, G>(
