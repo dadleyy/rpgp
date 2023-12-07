@@ -501,15 +501,9 @@ impl Message {
                     .iter()
                     .map(|(packet, encoding_key, encoding_subkey)| {
                         if let Some(ek) = encoding_key {
-                            Ok((
-                                ek.key_id(),
-                                decrypt_session_key(ek, key_pw.clone(), packet.mpis())?,
-                            ))
+                            Ok((ek.key_id(), decrypt_session_key(ek, key_pw, packet.mpis())?))
                         } else if let Some(ek) = encoding_subkey {
-                            Ok((
-                                ek.key_id(),
-                                decrypt_session_key(ek, key_pw.clone(), packet.mpis())?,
-                            ))
+                            Ok((ek.key_id(), decrypt_session_key(ek, key_pw, packet.mpis())?))
                         } else {
                             unreachable!("either a key or a subkey were found");
                         }

@@ -85,3 +85,15 @@ impl Hasher for SimpleChecksum {
 pub fn calculate_sha1(data: &[u8]) -> Vec<u8> {
     Sha1::digest(data)[..20].to_vec()
 }
+
+/// Computes the sha1 by iterating over a slice of slices.
+#[inline]
+pub fn calculate_sha1_iter(data: &[&[u8]]) -> Vec<u8> {
+    let mut digest = Sha1::new();
+
+    for chunk in data {
+        digest.update(chunk);
+    }
+
+    digest.finalize().as_slice()[..20].to_vec()
+}
